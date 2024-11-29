@@ -1,5 +1,8 @@
 ;; OpenSea-like Marketplace Contract
 
+;; Import the NFT token trait
+(use-trait nft-trait .nft-trait.nft-trait)
+
 ;; Constants
 (define-constant MARKETPLACE-OWNER tx-sender)
 (define-constant ERR-UNAUTHORIZED (err u100))
@@ -32,13 +35,19 @@
 ;; Public functions
 
 ;; List an NFT for sale
-(define-public (list-nft (token-contract principal) (nft-id uint) (listing-price uint) (listing-duration uint) (creator-address (optional principal)) (creator-royalty-rate uint))
+(define-public (list-nft 
+  (token-contract <nft-trait>) 
+  (nft-id uint) 
+  (listing-price uint) 
+  (listing-duration uint) 
+  (creator-address (optional principal)) 
+  (creator-royalty-rate uint))
   (let
     (
       (new-listing-id (var-get next-nft-listing-id))
     )
     ;; Ensure the caller owns the NFT
-    (asserts! (is-eq (contract-call? token-contract get-owner nft-id) tx-sender) ERR-UNAUTHORIZED)
+    (asserts! (is-eq (unwrap! (contract-call? token-contract get-owner nft-id) ERR-UNAUTHORIZED) (some tx-sender)) ERR-UNAUTHORIZED)
     ;; Ensure the royalty percentage is not too high
     (asserts! (< creator-royalty-rate u1000) ERR-EXCESSIVE-ROYALTY) ;; Max 10% royalty
     ;; Create the listing
@@ -46,7 +55,7 @@
       { id: new-listing-id }
       {
         seller: tx-sender,
-        token-contract: token-contract,
+        token-contract: (contract-of token-contract),
         nft-id: nft-id,
         listing-price: listing-price,
         expiry: (+ block-height listing-duration),
@@ -64,13 +73,12 @@
 )
 
 ;; Buy a listed NFT
-(define-public (buy-nft (nft-listing-id uint))
+(define-public (buy-nft (listing-id uint) (token-contract <nft-trait>))
   (let
     (
-      (nft-listing (unwrap! (map-get? nft-listings { id: nft-listing-id }) ERR-LISTING-NOT-FOUND))
+      (nft-listing (unwrap! (map-get? nft-listings { id: listing-id }) ERR-LISTING-NOT-FOUND))
       (listing-price (get listing-price nft-listing))
       (nft-seller (get seller nft-listing))
-      (token-contract (get token-contract nft-listing))
       (nft-id (get nft-id nft-listing))
       (creator-address (get creator-address nft-listing))
       (creator-royalty-rate (get creator-royalty-rate nft-listing))
@@ -82,6 +90,8 @@
     (asserts! (<= block-height (get expiry nft-listing)) ERR-EXPIRED-LISTING)
     ;; Ensure the buyer has sufficient balance
     (asserts! (>= (stx-get-balance tx-sender) listing-price) ERR-INADEQUATE-FUNDS)
+    ;; Ensure the provided token contract matches the listing
+    (asserts! (is-eq (contract-of token-contract) (get token-contract nft-listing)) ERR-UNAUTHORIZED)
     ;; Transfer the NFT to the buyer
     (try! (as-contract (contract-call? token-contract transfer nft-id tx-sender tx-sender)))
     ;; Transfer payment to the seller
@@ -94,24 +104,26 @@
       true
     )
     ;; Remove the listing
-    (map-delete nft-listings { id: nft-listing-id })
+    (map-delete nft-listings { id: listing-id })
     ;; Return success
     (ok true)
   )
 )
 
 ;; Cancel a listing
-(define-public (cancel-listing (nft-listing-id uint))
+(define-public (cancel-listing (listing-id uint) (token-contract <nft-trait>))
   (let
     (
-      (nft-listing (unwrap! (map-get? nft-listings { id: nft-listing-id }) ERR-LISTING-NOT-FOUND))
+      (nft-listing (unwrap! (map-get? nft-listings { id: listing-id }) ERR-LISTING-NOT-FOUND))
     )
     ;; Ensure the caller is the seller
     (asserts! (is-eq tx-sender (get seller nft-listing)) ERR-UNAUTHORIZED)
+    ;; Ensure the provided token contract matches the listing
+    (asserts! (is-eq (contract-of token-contract) (get token-contract nft-listing)) ERR-UNAUTHORIZED)
     ;; Transfer the NFT back to the seller
-    (try! (as-contract (contract-call? (get token-contract nft-listing) transfer (get nft-id nft-listing) tx-sender tx-sender)))
+    (try! (as-contract (contract-call? token-contract transfer (get nft-id nft-listing) tx-sender tx-sender)))
     ;; Remove the listing
-    (map-delete nft-listings { id: nft-listing-id })
+    (map-delete nft-listings { id: listing-id })
     ;; Return success
     (ok true)
   )
